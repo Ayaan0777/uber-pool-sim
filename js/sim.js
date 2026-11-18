@@ -596,31 +596,41 @@ function definePoolSim(root) {
 
   // One safe aim-point for this step, given the direct L-route to `dest` is
   // blocked: head for whichever clear "compass corner" just outside the
-  // nearest blocking zone costs the least total detour. If even that is
-  // blocked (overlapping zones), fall back to a step straight away from the
-  // zone's center -- always safe, always makes progress, always terminates.
+  // nearest blocking zone costs the least total detour, trying progressively
+  // wider margins until the leg beyond the corner (not just the approach to
+  // it) is clear too -- a corner that only solves the approach just defers
+  // the problem to the moment the cab arrives there, forcing another pick,
+  // which is the back-and-forth (expensive once turns cost time) this whole
+  // search is built to avoid. Widening geometrically means this always
+  // resolves in a small, bounded number of tries, never a long crawl.
   World.prototype.safeStepTarget = function (cab, dest, threats) {
     if (!this.legCrossesThreats(cab.x, cab.y, dest.x, dest.y, threats)) return dest;
     var th = null, i;
     for (i = 0; i < threats.length; i++) {
       if (this.legCrossesThreats(cab.x, cab.y, dest.x, dest.y, [threats[i]])) { th = threats[i]; break; }
     }
-    var G = this.cfg.gridSize, m = th.radius + 1;
-    var corners = [
-      { x: th.x + m, y: th.y }, { x: th.x - m, y: th.y },
-      { x: th.x, y: th.y + m }, { x: th.x, y: th.y - m },
-    ];
-    var best = null, bestCost = Infinity;
-    for (i = 0; i < corners.length; i++) {
-      var c = corners[i];
-      c.x = Math.max(0, Math.min(G - 1, c.x));
-      c.y = Math.max(0, Math.min(G - 1, c.y));
-      if (this.inThreat(c.x, c.y, threats)) continue;
-      if (this.legCrossesThreats(cab.x, cab.y, c.x, c.y, threats)) continue;
-      var cost = manhattan(cab.x, cab.y, c.x, c.y) + manhattan(c.x, c.y, dest.x, dest.y);
-      if (cost < bestCost) { bestCost = cost; best = c; }
+    var G = this.cfg.gridSize, maxM = 2 * G;
+    for (var m = th.radius + 1; m <= maxM; m += Math.max(2, th.radius)) {
+      var corners = [
+        { x: th.x + m, y: th.y }, { x: th.x - m, y: th.y },
+        { x: th.x, y: th.y + m }, { x: th.x, y: th.y - m },
+      ];
+      var best = null, bestCost = Infinity;
+      for (i = 0; i < corners.length; i++) {
+        var c = corners[i];
+        c.x = Math.max(0, Math.min(G - 1, c.x));
+        c.y = Math.max(0, Math.min(G - 1, c.y));
+        if (this.inThreat(c.x, c.y, threats)) continue;
+        if (this.legCrossesThreats(cab.x, cab.y, c.x, c.y, threats)) continue;
+        if (this.legCrossesThreats(c.x, c.y, dest.x, dest.y, threats)) continue;
+        var cost = manhattan(cab.x, cab.y, c.x, c.y) + manhattan(c.x, c.y, dest.x, dest.y);
+        if (cost < bestCost) { bestCost = cost; best = c; }
+      }
+      if (best) return best;
     }
-    if (best) return best;
+    // Every ring failed (deeply overlapping zones): take one step straight
+    // away from the nearest threat's center. Always safe, always makes
+    // progress, and the widening search above will succeed as soon as it does.
     var dx = Math.sign(cab.x - th.x) || 1, dy = Math.sign(cab.y - th.y) || 1;
     return { x: Math.max(0, Math.min(G - 1, cab.x + dx)), y: Math.max(0, Math.min(G - 1, cab.y + dy)) };
   };

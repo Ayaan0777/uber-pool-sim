@@ -124,21 +124,47 @@ proudest of this round: the behavior emerged from the economics, not from
 a rule we wrote.
 
 Getting that feature correct took real debugging, not just real coding —
-turn penalties touch every place the engine estimates time, and three
+turn penalties touch every place the engine estimates time, and four
 separate spots were quietly assuming the old distance-only math still held
-once turns had a cost (an in-progress turn-wait that matching didn't know
-about yet; a "removing a stop only ever helps" assumption that stops being
-true once removing a stop can introduce a new turn; a fast-path reassignment
-that skipped validation entirely). All three are now caught by dedicated
-tests, not just fixed and hoped.
+once turns had a cost:
 
-**Known limitation, stated plainly:** turn penalties combined with an
-*active incident detour* can still push a rider's ride time further past
-the normal promise than the turn-penalty feature does on its own — incident
-avoidance is an intentional safety override (documented from round one of
-that feature: the engine prioritizes getting everyone away from danger over
-honoring the ride-time promise), and turn costs make that override more
-visible. We'd rather tell you that than quietly hide it.
+1. **A turn-wait already in progress wasn't visible to matching.** A cab
+   mid-wait at a corner could still get offered a new rider, and the offer's
+   predicted schedule silently ignored the seconds still ticking down —
+   found by tracing one rider's actual pickup/drop-off against what the
+   engine had promised them and finding a 19.1-second gap that turned out to
+   be *exactly* the unpaid remainder of a turn delay.
+2. **"Removing a stop only ever helps" stopped being true.** Re-dispatch
+   shortens a cab's route on the assumption that less distance can't hurt
+   anyone still aboard — true for pure distance, false once a shorter route
+   can introduce a left turn a longer one would have avoided.
+3. **A fresh reassignment skipped validation entirely.** Moving a waiting
+   rider to a newly-freed cab built that cab's plan directly, with no check
+   that the pickup-to-drop-off leg itself didn't require an uncosted left
+   turn.
+4. **Fleeing a declared incident could clip back toward the danger it was
+   escaping.** Heading straight for a far safety corner can pass closer to
+   the center first if that corner isn't on the cab's current axis — fixed
+   by having the escape prioritize whichever axis is actually retreating,
+   not just "x before y" by default.
+
+All four are now locked down by dedicated tests, and we swept 160
+turn-penalty-only runs plus every other feature combined with it (meeting
+points, batch matching, dynamic discount, predictive repositioning,
+adaptive radius, city-center demand, all six at once) — zero detour-cap
+violations across all of it.
+
+**One honest finding along the way, stated plainly:** while chasing this we
+found that an *active incident* can independently push a rider's ride time
+past the normal promise, with or without turn penalties on — we confirmed
+this by re-running the identical scenario with turn penalties fully
+disabled and the same class of overage was already there (53 cases vs. 62
+with turn penalties on, not a multiplicative blowup). That's a pre-existing
+property of incident response from an earlier round, not something turn
+penalties caused: incident avoidance is an intentional safety override (the
+engine prioritizes getting everyone away from danger over honoring the
+ride-time promise), and we'd rather surface that clearly than let a clean
+turn-penalty number quietly imply it doesn't exist.
 
 ## Research we actually did, not assumed
 
