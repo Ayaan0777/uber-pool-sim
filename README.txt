@@ -49,30 +49,65 @@ identical demand, so "pooling saved riders $X" is never a guess dressed up
 as a statistic.
 
 ```mermaid
-flowchart LR
-    SEED[("seed + config")] --> SCEN["scenario generator\nsame riders · same cabs · same timing"]
-    SCEN --> POOL["World — Pool City"]
-    SCEN --> BASE["World — No-Pool City"]
-
-    subgraph ENGINE["sim.js — the engine, no DOM in sight"]
-        direction TB
-        MATCH["matching\nspatial index + batch/sequential"]
-        MOVE["movement\nturn cost + incident avoidance"]
-        HEAT["demand heat-map"]
-        ZONE["incident zones"]
-        MATCH --> MOVE
-        HEAT -.feeds.-> MATCH
-        ZONE -.blocks.-> MATCH
-        ZONE -.reroutes.-> MOVE
+flowchart TB
+    subgraph G1["① Input Generation"]
+        direction LR
+        SEED[("seed + config")] --> SCEN["scenario generator"]
+        SCEN --> DATA["riders + cabs\nidentical for both cities"]
     end
 
-    POOL --> ENGINE
-    BASE --> ENGINE
-    ENGINE --> METRICS["metrics.js\ntwin-city diff"]
-    METRICS --> REPORT["report.js\nend-of-run report"]
-    METRICS --> APP["app.js\nlive tiles · run loop"]
-    APP --> RENDER["render.js\ncanvas map"]
+    subgraph G2["② Simulation Engines — sim.js"]
+        direction LR
+        POOLWORLD["Pool City\nWorld · poolEnabled = true"]
+        SOLOWORLD["Solo City\nWorld · poolEnabled = false"]
+    end
+
+    subgraph G3["③ Matching and Optimization — shared engine logic, run once per city"]
+        direction LR
+        IDX["spatial grid\nindex"]
+        POLICY["batch / sequential\nmatcher"]
+        HEAT["demand\nheat-map"]
+        RADIUS["adaptive\nping radius"]
+        ZONE["incident\nzones"]
+        TURN["turn-cost\nrouting"]
+    end
+
+    subgraph G4["④ Metrics — metrics.js"]
+        DIFF["twin-city diff engine"]
+    end
+
+    subgraph G5["⑤ Reporting"]
+        direction LR
+        REPORT["report.js\nend-of-run report"]
+        APP["app.js\nlive tiles · run loop"]
+        RENDER["render.js\ncanvas map"]
+    end
+
+    DATA --> POOLWORLD
+    DATA --> SOLOWORLD
+
+    POOLWORLD <-.-> G3
+    SOLOWORLD <-.-> G3
+
+    POOLWORLD --> DIFF
+    SOLOWORLD --> DIFF
+
+    DIFF --> REPORT
+    DIFF --> APP
+    APP --> RENDER
+
+    classDef pool fill:#1d4ed8,stroke:#1e3a8a,stroke-width:2px,color:#ffffff
+    classDef solo fill:#6b7280,stroke:#374151,stroke-width:2px,color:#ffffff
+    class POOLWORLD pool
+    class SOLOWORLD solo
 ```
+
+Blue is the pool city, grey is the solo city — same two colors you'll see on
+every chart in the actual report, carried through here on purpose. Both
+worlds run off the exact same box ③ (same matching code, same rules); they
+just each carry their own grid, heat-map and incident state, so the diff in
+④ is always comparing identical demand under two different policies, never
+two different cities.
 
 The engine (`js/sim.js`) has no idea the DOM exists. That separation is
 the whole reason we could keep bolting new mechanics onto it all session
@@ -93,16 +128,46 @@ this is the part that grew the most:
 
 ```mermaid
 flowchart TD
-    TICK["every dispatch tick, 1 simulated second"] --> GIVEUP["riders past their patience give up"]
-    GIVEUP --> IDX["[NEW] spatial grid rebuilt\n(cabs bucketed by position)"]
-    IDX --> RADIUS["[NEW] adaptive ping radius\n(widens under pressure, tightens when slack)"]
-    RADIUS --> POLICY{"matching policy"}
-    POLICY -->|"[NEW] batch matching"| BATCH["rank every feasible pair by cost,\ncommit cheapest first"]
-    POLICY -->|"default"| SEQ["match oldest request first"]
-    BATCH --> CHECK["every candidate still has to clear:\ncapacity · detour cap · ping radius ·\n[NEW] incident zones · [NEW] turn cost"]
-    SEQ --> CHECK
-    CHECK --> REPOSITION["[NEW] idle cabs drift toward\npredicted demand off a live heat-map"]
+    START(["dispatch tick — every 1 simulated second, run independently inside each city"]) --> GIVEUP["riders past their patience give up"]
+
+    subgraph PREP["prepare"]
+        direction LR
+        IDX["spatial grid index\nrebuilt [NEW]"]
+        RADIUS["adaptive ping radius\nwidens under pressure, tightens when slack [NEW]"]
+        IDX --> RADIUS
+    end
+
+    subgraph MATCHPHASE["match"]
+        direction TB
+        POLICY{"matching policy"}
+        BATCH["batch: rank every feasible\npair by cost, commit cheapest first [NEW]"]
+        SEQ["sequential: match oldest\nrequest first (default)"]
+        POLICY --> BATCH
+        POLICY --> SEQ
+    end
+
+    subgraph VALIDATE["validate every candidate before it's committed"]
+        direction LR
+        CAP["capacity"]
+        DETOUR["detour cap"]
+        PING["ping radius"]
+        ZONE["incident zones [NEW]"]
+        TURN["turn cost [NEW]"]
+    end
+
+    subgraph REBALANCE["rebalance"]
+        REPOSITION["idle cabs drift toward predicted\ndemand off a live heat-map [NEW]"]
+    end
+
+    GIVEUP --> PREP --> MATCHPHASE --> VALIDATE --> REBALANCE
 ```
+
+Four phases, same order every tick: get the fleet's current shape ready
+(**prepare**), decide who gets offered to whom (**match**), make sure
+nothing offered actually breaks a rule (**validate**), then let whoever's
+still idle drift toward where the next request is likely to land
+(**rebalance**). Every box marked **[NEW]** didn't exist in the original
+prototype at all.
 
 ## What was already there, and what we actually changed
 
